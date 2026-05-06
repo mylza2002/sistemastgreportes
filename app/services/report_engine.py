@@ -41,9 +41,6 @@ REPORTS = {
             ("Fecha Prórroga",              "fecha_prorroga"),
             ("Enlace Repositorio",          "link_repo"),
             ("Mínimo tiempo",               "fecha_minima"),
-            ("primera cc",           "documento_est_1_alt"),
-            ("segunda cc",           "documento_est_2_alt"),
-            ("Enlace repositorio exentos",  "link_repo_exento"),
         ],
         
         "title": "Reporte General TG Sistemas"

@@ -95,17 +95,35 @@ def get_general_report(
                 ELSE 1
             END                                                             AS participantes,
 
-            -- ── Actas ────────────────────────────────────────────────────
-            acta_prop.numero                                                AS acta_aprobacion_propuesta,
-            acta_prop.fecha                                                 AS fecha_aprobacion_acta,
+            -- ── Acta aprobación propuesta (fdc 124) ──────────────────────
+            acta_aprobacion.numero                                          AS acta_aprobacion_propuesta,
+            acta_aprobacion.fecha                                           AS fecha_aprobacion_acta,
+
+            -- ── Acta aprobación informe final (fdc 125) ───────────────────
             acta_final.numero                                               AS acta_aprobacion_final,
             acta_final.fecha                                                AS fecha_aprobacion_final,
 
-            -- ── Campos pendientes de implementar ─────────────────────────
-            NULL                                                            AS fecha_maxima,
-            NULL                                                            AS fecha_minima,
-            NULL                                                            AS acta_fecha_prorroga,
-            NULL                                                            AS fecha_prorroga,
+            -- ── Prórroga ─────────────────────────────────────────────────
+            acta_prorroga.numero                                            AS acta_fecha_prorroga,
+            acta_prorroga.fecha                                             AS fecha_prorroga,
+
+            -- ── Fechas calculadas ─────────────────────────────────────────
+            -- Mínimo tiempo: 90 días después de aprobación propuesta
+            CASE
+                WHEN acta_aprobacion.fecha IS NOT NULL
+                THEN DATE_ADD(acta_aprobacion.fecha, INTERVAL 90 DAY)
+            END                                                             AS fecha_minima,
+
+            -- Vencimiento: 180 días desde aprobación propuesta
+            -- Si tiene prórroga: 180 días adicionales desde el vencimiento inicial
+            CASE
+                WHEN acta_aprobacion.fecha IS NOT NULL AND acta_prorroga.fecha IS NOT NULL
+                THEN DATE_ADD(DATE_ADD(acta_aprobacion.fecha, INTERVAL 180 DAY), INTERVAL 180 DAY)
+                WHEN acta_aprobacion.fecha IS NOT NULL
+                THEN DATE_ADD(acta_aprobacion.fecha, INTERVAL 180 DAY)
+            END                                                             AS fecha_maxima,
+
+            -- ── Pendientes ────────────────────────────────────────────────
             NULL                                                            AS link_repo,
             NULL                                                            AS link_repo_exento,
             NULL                                                            AS documento_est_1_alt,
@@ -217,21 +235,31 @@ def get_general_report(
             LIMIT 1
         )
 
-        -- ── Acta de propuesta (primera acta del proyecto) ─────────────────
-        LEFT JOIN actas acta_prop ON acta_prop.id = (
+        -- ── Acta aprobación propuesta (fdc 124) ──────────────────────────
+        LEFT JOIN actas acta_aprobacion ON acta_aprobacion.id = (
             SELECT MIN(a.id)
             FROM actas a
             WHERE a.proyecto_id = s.id
+              AND a.descripcion = 'Aprobación de la propuesta'
               AND a.deleted_at IS NULL
         )
 
-        -- ── Acta final (última acta del proyecto) ─────────────────────────
+        -- ── Acta aprobación informe final (fdc 125) ───────────────────────
         LEFT JOIN actas acta_final ON acta_final.id = (
-            SELECT MAX(a.id)
+            SELECT MIN(a.id)
             FROM actas a
             WHERE a.proyecto_id = s.id
+              AND a.descripcion = 'Aprobación del informe final'
               AND a.deleted_at IS NULL
-              AND a.id != acta_prop.id
+        )
+
+        -- ── Prórroga ──────────────────────────────────────────────────────
+        LEFT JOIN actas acta_prorroga ON acta_prorroga.id = (
+            SELECT MIN(a.id)
+            FROM actas a
+            WHERE a.proyecto_id = s.id
+              AND a.descripcion = 'Prórroga'
+              AND a.deleted_at IS NULL
         )
 
         WHERE {where_sql}
@@ -246,8 +274,9 @@ def get_general_report(
             tbl_codir.name,
             usr_int1.id, usr_int1.name, usr_int1.nro_documento, usr_int1.nro_celular, usr_int1.email,
             usr_int2.id, usr_int2.name, usr_int2.nro_documento, usr_int2.nro_celular, usr_int2.email,
-            acta_prop.numero, acta_prop.fecha,
-            acta_final.numero, acta_final.fecha
+            acta_aprobacion.numero, acta_aprobacion.fecha,
+            acta_final.numero, acta_final.fecha,
+            acta_prorroga.numero, acta_prorroga.fecha
 
         ORDER BY s.created_at DESC
     """
