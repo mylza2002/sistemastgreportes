@@ -253,12 +253,12 @@ def get_general_report(
               AND a.deleted_at IS NULL
         )
 
-        -- ── Prórroga ──────────────────────────────────────────────────────
+        -- ── Prórroga (Aplazamiento de la propuesta) ──────────────────────────────────────────────────────
         LEFT JOIN actas acta_prorroga ON acta_prorroga.id = (
             SELECT MIN(a.id)
             FROM actas a
             WHERE a.proyecto_id = s.id
-              AND a.descripcion = 'Prórroga'
+              AND a.descripcion = 'Aplazamiento de la propuesta'
               AND a.deleted_at IS NULL
         )
 
