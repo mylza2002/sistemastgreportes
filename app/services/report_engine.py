@@ -1,5 +1,8 @@
 from app.repositories import report_repository
-from app.exports.excel_exporter import export_excel
+from app.exports.excel_exporter import export_excel, export_estadisticas_excel, export_dinamica_profesores_excel, export_dinamica_modalidad_excel
+from fastapi import HTTPException
+import logging
+logger = logging.getLogger(__name__)
 
 
 REPORTS = {
@@ -60,64 +63,75 @@ REPORTS = {
         "title": "Estudiantes propuestas aprobadas para afiliación ARL"
     },
     "beneficiarios_tyt_report": {
-    "query": report_repository.get_beneficiarios_tyt_report,
-    "params": [],
- 
-    "columns": [
-        ("Programa",    "programa"),
-        ("Título",      "titulo"),
-        ("Modalidad",   "modalidad"),
-        ("Estudiante",  "estudiante"),
-        ("ID",          "id_estudiante"),
-        ("Director",    "director"),
-        ("Evaluador",   "evaluador"),
-        ("Estado",      "estado"),
-        ("Observaciones", "observaciones"),
-    ],
- 
-    "title": "Beneficiarios TyT / PRO Sistemas"
-},
+        "query": report_repository.get_beneficiarios_tyt_report,
+        "params": [],
+    
+        "columns": [
+            ("Programa",    "programa"),
+            ("Título",      "titulo"),
+            ("Modalidad",   "modalidad"),
+            ("Estudiante",  "estudiante"),
+            ("ID",          "id_estudiante"),
+            ("Director",    "director"),
+            ("Evaluador",   "evaluador"),
+            ("Estado",      "estado"),
+            ("Observaciones", "observaciones"),
+        ],
+    
+        "title": "Beneficiarios TyT / PRO Sistemas"
+    },
+    "estadisticas_report": {
+        "query": report_repository.get_estadisticas_report,
+        "params": [],
+        "columns": [],   # no aplica — el exportador maneja su propio layout
+        "title": "Estadísticas a presentar en comité curricular",
+        "exporter": "estadisticas",   # señal para usar exportador especial
+    },
+    "dinamica_profesores_report": {
+        "query":    report_repository.get_dinamica_profesores_report,
+        "params":   [],
+        "columns":  [],
+        "title":    "Dinámica de Profesores - Trabajos de Grado",
+        "exporter": "dinamica_profesores",
+    },
+    "dinamica_modalidad_report": {
+        "query":    report_repository.get_dinamica_modalidad_report,
+        "params":   [],
+        "columns":  [],
+        "title":    "Dinámica por Modalidad - Trabajos de Grado",
+        "exporter": "dinamica_modalidad",
+    },
 }
 
 # =========================
 def generate_report(report_name, db, params):
-
+ 
     if report_name not in REPORTS:
-        raise Exception(f"Reporte '{report_name}' no existe")
-
+        raise HTTPException(status_code=404, detail=f"Reporte '{report_name}' no existe")
+ 
     report = REPORTS[report_name]
-
     query_function = report["query"]
-    columns = report["columns"]
+    columns        = report["columns"]
     expected_params = report.get("params", [])
-
-    # =========================
-    clean_params = []
-
-    for param in expected_params:
-        value = params.get(param, None)
-        clean_params.append(value)
-
-    # =========================
-    data = query_function(
-        db,
-        columns,
-        *clean_params
-    )
-    # DEBUG TEMPORAL — quitar después
-    if data:
-        print("🔍 Keys que retorna la query:", list(data[0].keys()))
-        print("🔍 Primera fila:", data[0])
-
-    # =========================
+ 
+    clean_params = [params.get(p) for p in expected_params]
+ 
+    data = query_function(db, columns, *clean_params)
+ 
     if not data:
-        print("⚠️ Reporte sin datos")
-
-    # =========================
-    file_path = export_excel(
-        data,
-        columns,
-        report["title"]
-    )
-
+        logger.warning(f"Reporte '{report_name}' sin datos")
+ 
+    # ── Exportador especial o genérico ────────────────────────────────────────
+    exporter = report.get("exporter")
+ 
+    if exporter == "estadisticas":
+        file_path = export_estadisticas_excel(data, report["title"])
+    elif exporter == "dinamica_profesores":
+        file_path = export_dinamica_profesores_excel(data, report["title"])
+    elif exporter == "dinamica_modalidad":
+        file_path = export_dinamica_modalidad_excel(data, report["title"])
+    else:
+        file_path = export_excel(data, columns, report["title"])
+ 
     return file_path
+ 

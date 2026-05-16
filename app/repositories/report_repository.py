@@ -515,3 +515,399 @@ def get_beneficiarios_tyt_report(
  
     result = db.execute(text(query))
     return [dict(row._mapping) for row in result]
+
+
+def get_estadisticas_report(
+    db,
+    columns: List[Tuple[str, str]],
+    estado: Optional[str] = None,
+    fecha_inicio: Optional[str] = None,
+    fecha_fin: Optional[str] = None,
+):
+    """
+    Reporte de estadísticas para comité curricular.
+    Retorna un dict con 3 secciones:
+      - por_semestre: proyectos recibidos, vigentes y estudiantes por periodo
+      - aprobacion: recibidos vs aprobados vs pendientes por periodo
+      - por_modalidad: cantidad proyectos y estudiantes por modalidad y nivel
+    """
+ 
+    # ── Tabla 1: Por semestre ─────────────────────────────────────────────────
+    query_semestre = text("""
+        SELECT
+            periodo,
+            COUNT(*)                                                AS proyectos_recibidos,
+ 
+            SUM(CASE WHEN s.estado NOT IN ('Rechazada','Finalizado')
+                THEN 1 ELSE 0 END)                                  AS proyectos_vigentes,
+ 
+            SUM(CASE WHEN s.estado NOT IN ('Rechazada','Finalizado')
+                     AND niv.id = 1
+                THEN 1 ELSE 0 END)                                  AS vigentes_tecnologico,
+ 
+            SUM(CASE WHEN s.estado NOT IN ('Rechazada','Finalizado')
+                     AND niv.id = 2
+                THEN 1 ELSE 0 END)                                  AS vigentes_profesional,
+ 
+            -- Estudiantes en proyectos vigentes
+            SUM(CASE WHEN s.estado NOT IN ('Rechazada','Finalizado')
+                THEN 1 ELSE 0 END)
+            + SUM(CASE WHEN s.estado NOT IN ('Rechazada','Finalizado')
+                        AND usr_int2.id IS NOT NULL
+                THEN 1 ELSE 0 END)                                  AS estudiantes_vigentes
+ 
+        FROM solicitudes s
+ 
+        -- Periodo
+        JOIN (
+            SELECT vc.solicitud_id,
+                   MAX(CASE WHEN c.name = 'periodo' THEN vc.valor END) AS periodo
+            FROM valores_campos vc
+            JOIN campos c ON c.id = vc.campo_id AND c.tipo_solicitud_id = 2
+            GROUP BY vc.solicitud_id
+        ) eav ON eav.solicitud_id = s.id
+ 
+        -- Nivel
+        LEFT JOIN niveles niv ON niv.id = (
+            SELECT CAST(vc_n.valor AS UNSIGNED)
+            FROM valores_campos vc_n
+            JOIN campos c_n ON c_n.id = vc_n.campo_id
+            WHERE vc_n.solicitud_id = s.id
+              AND c_n.name = 'nivel'
+              AND c_n.tipo_solicitud_id = 2
+            LIMIT 1
+        )
+ 
+        -- Integrante 2 (para contar estudiantes)
+        LEFT JOIN users usr_int2 ON usr_int2.id = (
+            SELECT CAST(vc_i2.valor AS UNSIGNED)
+            FROM valores_campos vc_i2
+            JOIN campos c_i2 ON c_i2.id = vc_i2.campo_id
+            WHERE vc_i2.solicitud_id = s.id
+              AND c_i2.name = 'id_integrante_2'
+              AND c_i2.tipo_solicitud_id = 2
+            LIMIT 1
+        )
+ 
+        WHERE s.tipo_solicitud_id = 2
+          AND s.deleted_at IS NULL
+ 
+        GROUP BY periodo
+        ORDER BY periodo ASC
+    """)
+ 
+    # ── Tabla 2: Aprobación del periodo ──────────────────────────────────────
+    query_aprobacion = text("""
+        SELECT
+            periodo,
+            COUNT(*)                                                AS recibidos,
+ 
+            -- Integrante 1 siempre existe; integrante 2 si no es NULL
+            COUNT(*)
+            + SUM(CASE WHEN usr_int2.id IS NOT NULL THEN 1 ELSE 0 END)
+                                                                    AS recibidos_estudiantes,
+ 
+            SUM(CASE WHEN s.estado IN ('Fase 4','Fase 5','Finalizado')
+                THEN 1 ELSE 0 END)                                  AS aprobados,
+ 
+            SUM(CASE WHEN s.estado IN ('Fase 4','Fase 5','Finalizado')
+                THEN 1 ELSE 0 END)
+            + SUM(CASE WHEN s.estado IN ('Fase 4','Fase 5','Finalizado')
+                        AND usr_int2.id IS NOT NULL
+                THEN 1 ELSE 0 END)                                  AS aprobados_estudiantes,
+ 
+            SUM(CASE WHEN s.estado NOT IN ('Fase 4','Fase 5','Finalizado','Rechazada')
+                THEN 1 ELSE 0 END)                                  AS pendientes,
+ 
+            SUM(CASE WHEN s.estado NOT IN ('Fase 4','Fase 5','Finalizado','Rechazada')
+                THEN 1 ELSE 0 END)
+            + SUM(CASE WHEN s.estado NOT IN ('Fase 4','Fase 5','Finalizado','Rechazada')
+                        AND usr_int2.id IS NOT NULL
+                THEN 1 ELSE 0 END)                                  AS pendientes_estudiantes
+ 
+        FROM solicitudes s
+ 
+        JOIN (
+            SELECT vc.solicitud_id,
+                   MAX(CASE WHEN c.name = 'periodo' THEN vc.valor END) AS periodo
+            FROM valores_campos vc
+            JOIN campos c ON c.id = vc.campo_id AND c.tipo_solicitud_id = 2
+            GROUP BY vc.solicitud_id
+        ) eav ON eav.solicitud_id = s.id
+ 
+        LEFT JOIN users usr_int2 ON usr_int2.id = (
+            SELECT CAST(vc_i2.valor AS UNSIGNED)
+            FROM valores_campos vc_i2
+            JOIN campos c_i2 ON c_i2.id = vc_i2.campo_id
+            WHERE vc_i2.solicitud_id = s.id
+              AND c_i2.name = 'id_integrante_2'
+              AND c_i2.tipo_solicitud_id = 2
+            LIMIT 1
+        )
+ 
+        WHERE s.tipo_solicitud_id = 2
+          AND s.deleted_at IS NULL
+ 
+        GROUP BY periodo
+        ORDER BY periodo ASC
+    """)
+ 
+    # ── Tabla 3: Por modalidad y nivel ────────────────────────────────────────
+    query_modalidad = text("""
+        SELECT
+            tbl_mod.nombre                                          AS modalidad,
+ 
+            SUM(CASE WHEN niv.id = 1 THEN 1 ELSE 0 END)            AS proyectos_tecnologico,
+            SUM(CASE WHEN niv.id = 1
+                THEN 1 ELSE 0 END)
+            + SUM(CASE WHEN niv.id = 1
+                        AND usr_int2.id IS NOT NULL
+                THEN 1 ELSE 0 END)                                  AS estudiantes_tecnologico,
+ 
+            SUM(CASE WHEN niv.id = 2 THEN 1 ELSE 0 END)            AS proyectos_profesional,
+            SUM(CASE WHEN niv.id = 2
+                THEN 1 ELSE 0 END)
+            + SUM(CASE WHEN niv.id = 2
+                        AND usr_int2.id IS NOT NULL
+                THEN 1 ELSE 0 END)                                  AS estudiantes_profesional
+ 
+        FROM solicitudes s
+ 
+        LEFT JOIN modalidades tbl_mod ON tbl_mod.id = (
+            SELECT CAST(vc_m.valor AS UNSIGNED)
+            FROM valores_campos vc_m
+            JOIN campos c_m ON c_m.id = vc_m.campo_id
+            WHERE vc_m.solicitud_id = s.id
+              AND c_m.name = 'modalidad'
+              AND c_m.tipo_solicitud_id = 2
+            LIMIT 1
+        )
+ 
+        LEFT JOIN niveles niv ON niv.id = (
+            SELECT CAST(vc_n.valor AS UNSIGNED)
+            FROM valores_campos vc_n
+            JOIN campos c_n ON c_n.id = vc_n.campo_id
+            WHERE vc_n.solicitud_id = s.id
+              AND c_n.name = 'nivel'
+              AND c_n.tipo_solicitud_id = 2
+            LIMIT 1
+        )
+ 
+        LEFT JOIN users usr_int2 ON usr_int2.id = (
+            SELECT CAST(vc_i2.valor AS UNSIGNED)
+            FROM valores_campos vc_i2
+            JOIN campos c_i2 ON c_i2.id = vc_i2.campo_id
+            WHERE vc_i2.solicitud_id = s.id
+              AND c_i2.name = 'id_integrante_2'
+              AND c_i2.tipo_solicitud_id = 2
+            LIMIT 1
+        )
+ 
+        WHERE s.tipo_solicitud_id = 2
+          AND s.deleted_at IS NULL
+ 
+        GROUP BY tbl_mod.nombre
+        ORDER BY proyectos_tecnologico DESC
+    """)
+ 
+    rows_semestre   = db.execute(query_semestre)
+    rows_aprobacion = db.execute(query_aprobacion)
+    rows_modalidad  = db.execute(query_modalidad)
+ 
+    return {
+        "por_semestre":  [dict(r._mapping) for r in rows_semestre],
+        "aprobacion":    [dict(r._mapping) for r in rows_aprobacion],
+        "por_modalidad": [dict(r._mapping) for r in rows_modalidad],
+    }
+
+
+def get_dinamica_profesores_report(
+    db,
+    columns: List[Tuple[str, str]],
+    estado: Optional[str] = None,
+    fecha_inicio: Optional[str] = None,
+    fecha_fin: Optional[str] = None,
+):
+    """
+    Reporte dinámica de profesores.
+    Retorna dict con:
+      - periodos: lista de periodos disponibles ordenados
+      - directores: [ {nombre, {periodo: count, ...}, total} ]
+      - evaluadores: [ {nombre, {periodo: count, ...}, total} ]
+    """
+ 
+    # ── Periodos disponibles ──────────────────────────────────────────────────
+    query_periodos = text("""
+        SELECT DISTINCT vc.valor AS periodo
+        FROM valores_campos vc
+        JOIN campos c ON c.id = vc.campo_id
+            AND c.name = 'periodo'
+            AND c.tipo_solicitud_id = 2
+        WHERE vc.valor IS NOT NULL
+        ORDER BY vc.valor ASC
+    """)
+ 
+    # ── Directores por periodo ────────────────────────────────────────────────
+    query_directores = text("""
+        SELECT
+            tbl_dir.name                                            AS nombre,
+            MAX(CASE WHEN c.name = 'periodo' THEN vc.valor END)    AS periodo,
+            COUNT(*)                                                AS total_periodo
+        FROM solicitudes s
+        JOIN valores_campos vc  ON vc.solicitud_id = s.id
+        JOIN campos c           ON c.id = vc.campo_id
+ 
+        LEFT JOIN users tbl_dir ON tbl_dir.id = (
+            SELECT CAST(vc_d.valor AS UNSIGNED)
+            FROM valores_campos vc_d
+            JOIN campos c_d ON c_d.id = vc_d.campo_id
+            WHERE vc_d.solicitud_id = s.id
+              AND c_d.name = 'director_id'
+              AND c_d.tipo_solicitud_id = 3
+            LIMIT 1
+        )
+ 
+        WHERE s.tipo_solicitud_id = 2
+          AND s.deleted_at IS NULL
+          AND tbl_dir.id IS NOT NULL
+ 
+        GROUP BY tbl_dir.name, (
+            SELECT vc_p.valor
+            FROM valores_campos vc_p
+            JOIN campos c_p ON c_p.id = vc_p.campo_id
+            WHERE vc_p.solicitud_id = s.id
+              AND c_p.name = 'periodo'
+              AND c_p.tipo_solicitud_id = 2
+            LIMIT 1
+        )
+        ORDER BY tbl_dir.name ASC, periodo ASC
+    """)
+ 
+    # ── Evaluadores por periodo ───────────────────────────────────────────────
+    query_evaluadores = text("""
+        SELECT
+            tbl_eva.name                                            AS nombre,
+            MAX(CASE WHEN c.name = 'periodo' THEN vc.valor END)    AS periodo,
+            COUNT(*)                                                AS total_periodo
+        FROM solicitudes s
+        JOIN valores_campos vc  ON vc.solicitud_id = s.id
+        JOIN campos c           ON c.id = vc.campo_id
+ 
+        LEFT JOIN users tbl_eva ON tbl_eva.id = (
+            SELECT CAST(vc_e.valor AS UNSIGNED)
+            FROM valores_campos vc_e
+            JOIN campos c_e ON c_e.id = vc_e.campo_id
+            WHERE vc_e.solicitud_id = s.id
+              AND c_e.name = 'evaluador_id'
+              AND c_e.tipo_solicitud_id = 3
+            LIMIT 1
+        )
+ 
+        WHERE s.tipo_solicitud_id = 2
+          AND s.deleted_at IS NULL
+          AND tbl_eva.id IS NOT NULL
+ 
+        GROUP BY tbl_eva.name, (
+            SELECT vc_p.valor
+            FROM valores_campos vc_p
+            JOIN campos c_p ON c_p.id = vc_p.campo_id
+            WHERE vc_p.solicitud_id = s.id
+              AND c_p.name = 'periodo'
+              AND c_p.tipo_solicitud_id = 2
+            LIMIT 1
+        )
+        ORDER BY tbl_eva.name ASC, periodo ASC
+    """)
+ 
+    periodos = [r["periodo"] for r in db.execute(query_periodos).mappings()]
+ 
+    # Pivotear directores: {nombre -> {periodo -> count}}
+    directores = {}
+    for r in db.execute(query_directores).mappings():
+        nombre  = r["nombre"]
+        periodo = r["periodo"]
+        count   = r["total_periodo"]
+        if nombre not in directores:
+            directores[nombre] = {}
+        directores[nombre][periodo] = count
+ 
+    # Pivotear evaluadores: {nombre -> {periodo -> count}}
+    evaluadores = {}
+    for r in db.execute(query_evaluadores).mappings():
+        nombre  = r["nombre"]
+        periodo = r["periodo"]
+        count   = r["total_periodo"]
+        if nombre not in evaluadores:
+            evaluadores[nombre] = {}
+        evaluadores[nombre][periodo] = count
+ 
+    return {
+        "periodos":    periodos,
+        "directores":  directores,
+        "evaluadores": evaluadores,
+    }
+
+def get_dinamica_modalidad_report(
+    db,
+    columns: List[Tuple[str, str]],
+    estado: Optional[str] = None,
+    fecha_inicio: Optional[str] = None,
+    fecha_fin: Optional[str] = None,
+):
+    """
+    Reporte dinámica por modalidad.
+    Retorna proyectos agrupados por periodo y modalidad,
+    con cantidad total y cantidad aprobada (Fase 4 en adelante).
+    """
+ 
+    query = text("""
+        SELECT
+            eav.periodo,
+            tbl_mod.nombre                                          AS modalidad,
+            COUNT(*)                                                AS cantidad,
+            SUM(CASE WHEN s.estado IN ('Fase 4','Fase 5','Finalizado')
+                THEN 1 ELSE 0 END)                                 AS aprobados
+        FROM solicitudes s
+ 
+        -- Periodo desde EAV
+        JOIN (
+            SELECT vc.solicitud_id,
+                   MAX(CASE WHEN c.name = 'periodo' THEN vc.valor END) AS periodo
+            FROM valores_campos vc
+            JOIN campos c ON c.id = vc.campo_id AND c.tipo_solicitud_id = 2
+            GROUP BY vc.solicitud_id
+        ) eav ON eav.solicitud_id = s.id
+ 
+        -- Modalidad
+        LEFT JOIN modalidades tbl_mod ON tbl_mod.id = (
+            SELECT CAST(vc_m.valor AS UNSIGNED)
+            FROM valores_campos vc_m
+            JOIN campos c_m ON c_m.id = vc_m.campo_id
+            WHERE vc_m.solicitud_id = s.id
+              AND c_m.name = 'modalidad'
+              AND c_m.tipo_solicitud_id = 2
+            LIMIT 1
+        )
+ 
+        WHERE s.tipo_solicitud_id = 2
+          AND s.deleted_at IS NULL
+ 
+        GROUP BY eav.periodo, tbl_mod.nombre
+        ORDER BY eav.periodo ASC, cantidad DESC
+    """)
+ 
+    rows = db.execute(query).mappings()
+ 
+    # Pivotear en Python: {periodo -> [{modalidad, cantidad, aprobados}]}
+    result = {}
+    for r in rows:
+        p = r["periodo"]
+        if p not in result:
+            result[p] = []
+        result[p].append({
+            "modalidad": r["modalidad"],
+            "cantidad":  r["cantidad"],
+            "aprobados": r["aprobados"],
+        })
+ 
+    return result
