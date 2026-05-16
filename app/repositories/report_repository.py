@@ -283,3 +283,235 @@ def get_general_report(
 
     result = db.execute(text(query), params)
     return [dict(row._mapping) for row in result]
+
+
+def get_arl_report(
+    db,
+    columns: List[Tuple[str, str]],
+    estado: Optional[str] = None,
+    fecha_inicio: Optional[str] = None,
+    fecha_fin: Optional[str] = None,
+):
+    """
+    Reporte ARL: estudiantes con propuesta aprobada (fase_3 = tipo_solicitud_id 5).
+ 
+    Las solicitudes tipo 5 contienen directamente los campos EAV de tipo 2
+    (id_integrante_1, id_integrante_2, nivel, modalidad, periodo).
+    Cada integrante se devuelve como fila separada.
+    """
+ 
+    query = """
+        SELECT
+            usr_int.name            AS apellidos_nombres,
+            usr_int.nro_documento   AS nro_documento,
+            niv.nombre              AS programa_academico,
+            'PRINCIPAL'             AS sede
+ 
+        FROM (
+ 
+            -- ── Integrante 1 ─────────────────────────────────────────────
+            SELECT s.id AS solicitud_id, u.id, u.name, u.nro_documento
+            FROM solicitudes s
+            JOIN valores_campos vc ON vc.solicitud_id = s.id
+            JOIN campos c ON c.id = vc.campo_id
+                AND c.name = 'id_integrante_1'
+                AND c.tipo_solicitud_id = 2
+            JOIN users u ON u.id = CAST(vc.valor AS UNSIGNED)
+            WHERE s.tipo_solicitud_id = 5
+              AND s.deleted_at IS NULL
+ 
+            UNION ALL
+ 
+            -- ── Integrante 2 ─────────────────────────────────────────────
+            SELECT s.id AS solicitud_id, u.id, u.name, u.nro_documento
+            FROM solicitudes s
+            JOIN valores_campos vc ON vc.solicitud_id = s.id
+            JOIN campos c ON c.id = vc.campo_id
+                AND c.name = 'id_integrante_2'
+                AND c.tipo_solicitud_id = 2
+            JOIN users u ON u.id = CAST(vc.valor AS UNSIGNED)
+            WHERE s.tipo_solicitud_id = 5
+              AND s.deleted_at IS NULL
+ 
+        ) usr_int
+ 
+        -- ── Nivel / Programa académico ───────────────────────────────────
+        LEFT JOIN niveles niv ON niv.id = (
+            SELECT CAST(vc_n.valor AS UNSIGNED)
+            FROM valores_campos vc_n
+            JOIN campos c_n ON c_n.id = vc_n.campo_id
+            WHERE vc_n.solicitud_id = usr_int.solicitud_id
+              AND c_n.name = 'nivel'
+              AND c_n.tipo_solicitud_id = 2
+            LIMIT 1
+        )
+ 
+        ORDER BY usr_int.name ASC
+    """
+ 
+    result = db.execute(text(query))
+    return [dict(row._mapping) for row in result]
+
+
+def get_beneficiarios_tyt_report(
+    db,
+    columns: List[Tuple[str, str]],
+    estado: Optional[str] = None,
+    fecha_inicio: Optional[str] = None,
+    fecha_fin: Optional[str] = None,
+):
+    """
+    Reporte Beneficiarios TyT/PRO.
+ 
+    Solo incluye los integrantes cuyos IDs están dentro del array JSON
+    del campo EAV 'beneficiarios_icfes' (tipo_solicitud_id = 6).
+ 
+    Cada integrante beneficiario genera su propia fila.
+    Estado = nombre del tipo_solicitud de la solicitud fase_0 (tipo 2).
+    """
+ 
+    query = """
+        SELECT
+            niv.nombre                                                  AS programa,
+ 
+            COALESCE(
+                NULLIF(MAX(CASE WHEN c.name = 'titulo'  THEN vc.valor END), ''),
+                s1.titulo_idea
+            )                                                           AS titulo,
+ 
+            CONCAT(
+                tbl_mod.nombre,
+                ' - ',
+                MAX(CASE WHEN c.name = 'codigo_modalidad' THEN vc.valor END)
+            )                                                           AS modalidad,
+ 
+            usr_int.name                                                AS estudiante,
+            usr_int.nro_documento                                       AS id_estudiante,
+            tbl_dir.name                                                AS director,
+            tbl_eva.name                                                AS evaluador,
+            ts.nombre                                                   AS estado,
+            NULL                                                        AS observaciones
+ 
+        FROM solicitudes s
+ 
+        -- ── Tipo solicitud para el estado ────────────────────────────────
+        JOIN tipos_solicitudes ts ON ts.id = s.tipo_solicitud_id
+ 
+        -- ── EAV principal ─────────────────────────────────────────────────
+        LEFT JOIN valores_campos vc ON vc.solicitud_id = s.id
+        LEFT JOIN campos c ON c.id = vc.campo_id
+ 
+        -- ── Beneficiarios icfes: el campo JSON con los IDs ────────────────
+        JOIN (
+            SELECT vc_b.solicitud_id, vc_b.valor AS beneficiarios_json
+            FROM valores_campos vc_b
+            JOIN campos c_b ON c_b.id = vc_b.campo_id
+                AND c_b.name = 'beneficiarios_icfes'
+        ) bene ON bene.solicitud_id = s.id
+ 
+        -- ── Integrantes que están en el JSON de beneficiarios ─────────────
+        JOIN (
+            SELECT s_u.id AS solicitud_id, u.id, u.name, u.nro_documento
+            FROM solicitudes s_u
+            JOIN valores_campos vc_u ON vc_u.solicitud_id = s_u.id
+            JOIN campos c_u ON c_u.id = vc_u.campo_id
+                AND c_u.name = 'id_integrante_1'
+                AND c_u.tipo_solicitud_id = 2
+            JOIN users u ON u.id = CAST(vc_u.valor AS UNSIGNED)
+ 
+            UNION ALL
+ 
+            SELECT s_u.id AS solicitud_id, u.id, u.name, u.nro_documento
+            FROM solicitudes s_u
+            JOIN valores_campos vc_u ON vc_u.solicitud_id = s_u.id
+            JOIN campos c_u ON c_u.id = vc_u.campo_id
+                AND c_u.name = 'id_integrante_2'
+                AND c_u.tipo_solicitud_id = 2
+            JOIN users u ON u.id = CAST(vc_u.valor AS UNSIGNED)
+        ) usr_int
+            ON usr_int.solicitud_id = s.id
+            AND JSON_CONTAINS(bene.beneficiarios_json, CONCAT('"', usr_int.id, '"'))
+ 
+        -- ── Nivel ────────────────────────────────────────────────────────
+        LEFT JOIN niveles niv ON niv.id = (
+            SELECT CAST(vc_n.valor AS UNSIGNED)
+            FROM valores_campos vc_n
+            JOIN campos c_n ON c_n.id = vc_n.campo_id
+            WHERE vc_n.solicitud_id = s.id
+              AND c_n.name = 'nivel'
+              AND c_n.tipo_solicitud_id = 2
+            LIMIT 1
+        )
+ 
+        -- ── Modalidad ────────────────────────────────────────────────────
+        LEFT JOIN modalidades tbl_mod ON tbl_mod.id = (
+            SELECT CAST(vc_m.valor AS UNSIGNED)
+            FROM valores_campos vc_m
+            JOIN campos c_m ON c_m.id = vc_m.campo_id
+            WHERE vc_m.solicitud_id = s.id
+              AND c_m.name = 'modalidad'
+              AND c_m.tipo_solicitud_id = 2
+            LIMIT 1
+        )
+ 
+        -- ── Director ─────────────────────────────────────────────────────
+        LEFT JOIN users tbl_dir ON tbl_dir.id = (
+            SELECT CAST(vc_d.valor AS UNSIGNED)
+            FROM valores_campos vc_d
+            JOIN campos c_d ON c_d.id = vc_d.campo_id
+            WHERE vc_d.solicitud_id = s.id
+              AND c_d.name = 'director_id'
+              AND c_d.tipo_solicitud_id = 3
+            LIMIT 1
+        )
+ 
+        -- ── Evaluador ────────────────────────────────────────────────────
+        LEFT JOIN users tbl_eva ON tbl_eva.id = (
+            SELECT CAST(vc_e.valor AS UNSIGNED)
+            FROM valores_campos vc_e
+            JOIN campos c_e ON c_e.id = vc_e.campo_id
+            WHERE vc_e.solicitud_id = s.id
+              AND c_e.name = 'evaluador_id'
+              AND c_e.tipo_solicitud_id = 3
+            LIMIT 1
+        )
+ 
+        -- ── Título desde tipo 1 via idea_banco ───────────────────────────
+        LEFT JOIN (
+            SELECT
+                s1.id,
+                MAX(CASE WHEN c1.name = 'titulo' THEN vc1.valor END) AS titulo_idea
+            FROM solicitudes s1
+            JOIN valores_campos vc1 ON vc1.solicitud_id = s1.id
+            JOIN campos c1 ON c1.id = vc1.campo_id AND c1.tipo_solicitud_id = 1
+            WHERE s1.tipo_solicitud_id = 1
+              AND s1.deleted_at IS NULL
+            GROUP BY s1.id
+        ) s1 ON s1.id = (
+            SELECT CAST(vc_idea.valor AS UNSIGNED)
+            FROM valores_campos vc_idea
+            JOIN campos c_idea ON c_idea.id = vc_idea.campo_id
+            WHERE vc_idea.solicitud_id = s.id
+              AND c_idea.name = 'idea_banco'
+              AND c_idea.tipo_solicitud_id = 3
+            LIMIT 1
+        )
+ 
+        WHERE s.deleted_at IS NULL
+ 
+        GROUP BY
+            usr_int.id,
+            usr_int.name,
+            usr_int.nro_documento,
+            niv.nombre,
+            tbl_mod.nombre,
+            tbl_dir.name,
+            tbl_eva.name,
+            ts.nombre,
+            s1.titulo_idea
+ 
+        ORDER BY niv.nombre, usr_int.name ASC
+    """
+ 
+    result = db.execute(text(query))
+    return [dict(row._mapping) for row in result]

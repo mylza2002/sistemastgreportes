@@ -46,10 +46,37 @@ REPORTS = {
         "title": "Reporte General TG Sistemas"
     },
 
-    # "modalidad":{
-    #     "query": "",
-    #     "columns": :[]
-    # }
+    "arl_report": {
+        "query": report_repository.get_arl_report,   # ajusta el import según tu estructura
+        "params": [],                                  # sin filtros por ahora
+    
+        "columns": [
+            ("APELLIDOS Y NOMBRES",   "apellidos_nombres"),
+            ("No. DE DOCUMENTO",      "nro_documento"),
+            ("PROGRAMA ACADÉMICO",    "programa_academico"),
+            ("SEDE",                  "sede"),
+        ],
+    
+        "title": "Estudiantes propuestas aprobadas para afiliación ARL"
+    },
+    "beneficiarios_tyt_report": {
+    "query": report_repository.get_beneficiarios_tyt_report,
+    "params": [],
+ 
+    "columns": [
+        ("Programa",    "programa"),
+        ("Título",      "titulo"),
+        ("Modalidad",   "modalidad"),
+        ("Estudiante",  "estudiante"),
+        ("ID",          "id_estudiante"),
+        ("Director",    "director"),
+        ("Evaluador",   "evaluador"),
+        ("Estado",      "estado"),
+        ("Observaciones", "observaciones"),
+    ],
+ 
+    "title": "Beneficiarios TyT / PRO Sistemas"
+},
 }
 
 # =========================
